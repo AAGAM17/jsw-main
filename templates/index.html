@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JSW Steel Project Discovery</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .project-card {
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+            margin: 20px 0;
+            padding: 20px;
+            transition: all 0.3s ease;
+        }
+        
+        .project-card:hover {
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        
+        .priority-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 14px;
+            margin-right: 8px;
+        }
+        
+        .priority-badge.high {
+            background: #fde8e8;
+            color: #dc3545;
+        }
+        
+        .priority-badge.normal {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+        
+        .requirements-box {
+            font-size: 16px;
+            margin-bottom: 12px;
+        }
+        
+        .relationship-note {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+            font-size: 16px;
+            color: #1a1a1a;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div class="max-w-6xl mx-auto p-6">
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-900">JSW Steel Project Discovery</h1>
+            
+            <div class="flex gap-4">
+                <button id="runPipeline" class="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors">
+                    Run Pipeline
+                </button>
+                <button id="runTest" class="bg-[#67B7F7] text-white px-6 py-3 rounded-lg hover:opacity-90 transition-opacity">
+                    Run Test
+                </button>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg shadow-sm p-6 mb-6">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">Workflow Controls</h2>
+            
+            <div class="flex gap-4 mb-4">
+                <button id="runPipeline" class="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors">
+                    Run Pipeline
+                </button>
+                <button id="runTest" class="bg-[#67B7F7] text-white px-6 py-3 rounded-lg hover:opacity-90 transition-opacity">
+                    Run Test
+                </button>
+            </div>
+            
+            <label class="block font-medium text-gray-700">Schedule Workflow Run:</label>
+            <select id="workflowSchedule" class="w-full p-2 border rounded-lg mb-4">
+                <option>Every 10 minutes</option>
+                <option>Every 30 minutes</option>
+                <option>Every hour</option>
+                <option>Every 3 hours</option>
+                <option>Every 6 hours</option>
+                <option>Every 9 hours</option>
+                <option>Every day</option>
+            </select>
+            
+            <label class="block font-medium text-gray-700">Lead Delivery Preferences:</label>
+            <select id="leadDelivery" class="w-full p-2 border rounded-lg mb-4">
+                <option>Realtime</option>
+                <option>Every hour</option>
+                <option>Realtime from 8 AM to 7 PM</option>
+                <option>Bulk notification every morning</option>
+            </select>
+            <button id="saveWorkflowSettings" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors">Save Workflow Settings</button>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow-sm p-6 mb-6">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">Assign Team Members</h2>
+            
+            <div id="addMemberForm">
+                <input id="memberName" type="text" placeholder="Name" class="w-full p-2 border rounded-lg mb-2">
+                <input id="memberEmail" type="email" placeholder="Email" class="w-full p-2 border rounded-lg mb-2">
+                <input id="memberPhone" type="tel" placeholder="Phone" class="w-full p-2 border rounded-lg mb-2">
+                <select id="memberTeam" class="w-full p-2 border rounded-lg mb-4">
+                    <option value="Hot Rolled">Hot Rolled (Flat Products)</option>
+                    <option value="Cold Rolled">Cold Rolled (Flat Products)</option>
+                    <option value="Galvanized">Galvanized (Flat Products)</option>
+                    <option value="Electrical Steel">Electrical Steel (Flat Products)</option>
+                    <option value="Galvalume Steel">Galvalume Steel (Flat Products)</option>
+                    <option value="TMT Bars">TMT Bars (Long Products)</option>
+                    <option value="Wire Rods">Wire Rods (Long Products)</option>
+                    <option value="Special Alloy Steel">Special Alloy Steel (Long Products)</option>
+                </select>
+                <button id="addMember" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors">Add Member</button>
+            </div>
+            
+            <h3 class="text-lg font-semibold text-gray-800 mt-6">Team Members</h3>
+            <ul id="teamMembers" class="mt-4 space-y-2"></ul>
+        </div>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- Status Card -->
+            <div class="bg-white rounded-lg shadow-sm p-6">
+                <h2 class="text-xl font-semibold text-gray-800 mb-4">Status Information</h2>
+                
+                <div class="space-y-3">
+                    <div>
+                        <span class="font-medium text-gray-700">Last Run:</span>
+                        <span id="lastRunTime" class="ml-2 text-gray-600">{{ last_run_time if last_run_time else 'Never' }}</span>
+                    </div>
+                    
+                    <div>
+                        <span class="font-medium text-gray-700">Status:</span>
+                        <span id="status" class="ml-2 text-gray-600">{{ last_run_status if last_run_status else 'Not Run' }}</span>
+                    </div>
+                    
+                    <div>
+                        <span class="font-medium text-gray-700">Results:</span>
+                        <div id="results" class="mt-2 text-gray-600">
+                            {{ last_run_results if last_run_results else 'No results available' }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Example Project Cards -->
+            <div class="project-card" style="border-left: 4px solid #dc3545;">
+                <div class="mb-4">
+                    <span class="priority-badge high">High Priority</span>
+                </div>
+                
+                <h3 class="text-2xl font-semibold text-gray-800 mb-2">HG Infra</h3>
+                <h4 class="text-xl text-gray-700 mb-4">HG Infra wins New Delhi railway station revamp contract (with DEC Infra)</h4>
+                
+                <div class="requirements-box">
+                    <strong class="text-gray-900">Primary:</strong> TMT Bars: ~15,000MT
+                </div>
+                <div class="requirements-box">
+                    <strong class="text-gray-900">Secondary:</strong> HR Plates: ~8,000MT
+                </div>
+                <div class="requirements-box">
+                    <strong class="text-gray-900">Work Begins:</strong> Q1 2026 - 3.7 years
+                </div>
+                
+                <div class="relationship-note">
+                    {% if relationship_data %}
+                    <div class="mb-2">
+                        <strong class="text-gray-900">Current Project:</strong> Maharashtra EPC Road Projects
+                    </div>
+                    <div class="mb-2">
+                        <strong class="text-gray-900">Volume:</strong> 40,000 MT (Ongoing)
+                    </div>
+                    <div class="mb-2">
+                        <strong class="text-gray-900">Materials:</strong> Structural Steel, Rebar
+                    </div>
+                    <div>
+                        <strong class="text-gray-900">Notes:</strong> Focus on green steel options to align with sustainability goals
+                    </div>
+                    {% else %}
+                    <div>
+                        <strong class="text-gray-900">No existing relationship found</strong>
+                    </div>
+                    {% endif %}
+                </div>
+                
+                <div class="mt-4 space-y-2">
+                    <div class="contact-info">
+                        <p class="text-gray-900 font-medium">Amit Patel</p>
+                        <p class="text-gray-600">VP of Procurement</p>
+                        <p class="text-gray-600">
+                            <a href="mailto:amit.patel@hginfra.com" class="text-blue-600 hover:text-blue-800">amit.patel@hginfra.com</a>
+                            • +91-9321098765
+                        </p>
+                    </div>
+                    <div class="contact-info">
+                        <p class="text-gray-900 font-medium">Neha Sharma</p>
+                        <p class="text-gray-600">VP of Procurement</p>
+                        <p class="text-gray-600">
+                            <a href="mailto:neha.sharma@hginfra.com" class="text-blue-600 hover:text-blue-800">neha.sharma@hginfra.com</a>
+                            • +91-9210987654
+                        </p>
+                    </div>
+                </div>
+                
+                <div class="mt-6 flex flex-wrap gap-4">
+                    <a href="#" class="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors">
+                        View Announcement
+                    </a>
+                    <a href="#" class="bg-gray-100 text-blue-600 px-6 py-3 rounded-lg hover:bg-gray-200 transition-colors border border-blue-600">
+                        Get More Info
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        let teamMembers = [];
+
+function renderTeamMembers() {
+    const teamList = document.getElementById('teamMembers');
+    teamList.innerHTML = '';
+    teamMembers.forEach((member, index) => {
+        const memberItem = document.createElement('li');
+        memberItem.classList.add("p-4", "bg-gray-100", "rounded-lg", "flex", "justify-between", "items-center");
+        memberItem.innerHTML = `
+            <div>
+                <p class="font-medium text-gray-900">${member.name}</p>
+                <p class="text-gray-600">${member.email} • ${member.phone}</p>
+                <p class="text-gray-600">Team: ${member.team}</p>
+            </div>
+            <button onclick="removeMember(${index})" class="bg-red-600 text-white px-3 py-1 rounded-lg hover:bg-red-700">Remove</button>
+        `;
+        teamList.appendChild(memberItem);
+    });
+}
+
+ async function removeMember (index) {
+
+    const team = teamMembers[index];
+    team['team'] = team['team'].replace(' ', '_').toUpperCase();
+    try {
+                const response = await fetch('/remove-member', {
+                    method: 'POST',headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(team),
+                });
+                const data = await response.json();
+            } catch (error) {
+                console.error('Error:', error);
+            }
+            teamMembers.splice(index, 1);
+    renderTeamMembers();
+}
+
+document.getElementById('addMember').addEventListener('click', async () => {
+    const name = document.getElementById('memberName').value.trim();
+    const email = document.getElementById('memberEmail').value.trim();
+    const phone = document.getElementById('memberPhone').value.trim();
+    const team = document.getElementById('memberTeam').value.replace(' ', '_').toUpperCase();
+
+    if (name && email && phone) {
+        
+        try {
+                const response = await fetch('/add-member', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ name, email, phone, team }),
+                });
+                const data = await response.json();
+            } catch (error) {
+                console.error('Error:', error);
+            }
+            teamMembers.push({ name, email, phone, team });
+        renderTeamMembers();
+        
+        document.getElementById('memberName').value = '';
+        document.getElementById('memberEmail').value = '';
+        document.getElementById('memberPhone').value = '';
+    }
+});
+
+document.getElementById('saveWorkflowSettings').addEventListener('click', async () => {
+        try {
+                const response = await fetch('/save-workflow-settings', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ "schudule_interval": document.getElementById('workflowSchedule').value, "lead_delivery_interval": document.getElementById('leadDelivery').value }),
+                });
+                const data = await response.json();
+            } catch (error) {
+                console.error('Error:', error);
+            }
+});
+
+async function getWorkflowSettings() {
+    try {
+        const response = await fetch('/get-workflow-settings');
+        const data = await response.json();
+        console.log(data);
+        document.getElementById('workflowSchedule').value = data.settings.schudule_interval;
+        document.getElementById('leadDelivery').value = data.settings.lead_delivery_interval;
+    } catch (error) {
+        console.error('Error:', error);
+    }
+}
+
+async function getTeamMembers() {
+    try {
+        const response = await fetch('/get-members');
+        const data = await response.json();
+        
+        Object.keys(data.members).forEach((key) => {
+            data.members[key].forEach((member) => {
+                teamMembers.push(member);
+            });
+        });
+        renderTeamMembers();
+    } catch (error) {
+        console.error('Error:', error);
+    }
+}
+        document.getElementById('runPipeline').addEventListener('click', async () => {
+            try {
+                const response = await fetch('/run', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                updateStatus();
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        });
+
+        document.getElementById('runTest').addEventListener('click', async () => {
+            try {
+                const response = await fetch('/send_test_email');
+                const data = await response.json();
+                if (data.status === 'success') {
+                    document.getElementById('results').textContent = 'Test email sent successfully';
+                } else {
+                    document.getElementById('results').textContent = 'Failed to send test email: ' + data.message;
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('results').textContent = 'Error sending test email';
+            }
+        });
+
+        async function updateStatus() {
+            try {
+                const response = await fetch('/status');
+                const data = await response.json();
+                
+                document.getElementById('lastRunTime').textContent = data.last_run_time || 'Never';
+                document.getElementById('status').textContent = data.status || 'Not Run';
+                document.getElementById('results').textContent = data.results || 'No results available';
+                
+                if (data.is_running) {
+                    setTimeout(updateStatus, 2000);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        // Initial status check
+        updateStatus();
+        getWorkflowSettings();
+        getTeamMembers();
+        
+    </script>
+</body>
+</html> 
