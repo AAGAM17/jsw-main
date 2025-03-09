@@ -176,11 +176,9 @@ class EmailHandler:
     def calculate_steel_requirement(self, project, product_type):
         """Calculate steel requirement based on project type and value"""
         try:
-            # Handle string input
             if isinstance(project, str):
                 text = project.lower()
-                value_in_cr = 0  # Default value for string inputs
-            # Handle dictionary input
+                value_in_cr = 0
             elif isinstance(project, dict):
                 value_in_cr = project.get('value', 0)
                 title = project.get('title', '').lower()
@@ -190,25 +188,19 @@ class EmailHandler:
                 self.logger.error(f"Invalid project type: {type(project)}")
                 return 0
 
-            # Get the rates for the product type
             rates = Config.STEEL_RATES.get(product_type, {})
-            # Default rate if nothing else matches
             rate = rates.get('default', 10)
 
-            # Find the most specific rate
             for category, category_rate in rates.items():
                 if category != 'default' and category in text:
                     rate = category_rate
                     break
 
-            # Conservative estimation
-            steel_tons = value_in_cr * rate * 0.8  # Using 0.8 as conservative factor
-            return steel_tons
+            return value_in_cr * rate * 0.8
 
         except Exception as e:
-            self.logger.error(
-                f"Error in calculate_steel_requirement: {str(e)}")
-            return 0  # Return 0 in case of error
+            self.logger.error(f"Error in calculate_steel_requirement: {str(e)}")
+            return 0
 
     def calculate_priority_score(self, project):
         """Calculate priority score based on contract value, timeline, and recency"""
@@ -226,8 +218,8 @@ class EmailHandler:
             steel_tons = project.get('steel_requirement', 0)
 
             # Calculate months until project start
-            start_date = project.get('start_date', datetime.now(
-            ) + timedelta(days=730))  # Default 24 months
+            start_date = project.get('start_date', datetime.now()
+            ) + timedelta(days=730)  # Default 24 months
             if isinstance(start_date, str):
                 try:
                     start_date = datetime.strptime(start_date, '%Y-%m-%d')
@@ -283,9 +275,10 @@ class EmailHandler:
         """Analyze project content to extract better estimates and details using expert analysis"""
         try:
             # Input validation and conversion
+            project_dict = {}
             if not isinstance(project, dict):
                 if isinstance(project, str):
-                    project = {
+                    project_dict = {
                         'title': project,
                         'description': project,
                         'value': 0,
@@ -296,9 +289,10 @@ class EmailHandler:
                     }
                 else:
                     raise ValueError(f"Invalid project type: {type(project)}")
+            else:
+                project_dict = project.copy()
 
             # Ensure all required fields exist
-            project_dict = project.copy()
             project_dict.setdefault('title', '')
             project_dict.setdefault('description', '')
             project_dict.setdefault('value', 0)
@@ -323,10 +317,10 @@ class EmailHandler:
 
             # Extract specifications
             specs = {
-                'length': None,
-                'area': None,
-                'capacity': None,
-                'floors': None
+                    'length': None,
+                    'area': None,
+                    'capacity': None,
+                    'floors': None
             }
 
             # Try to extract length (for infrastructure projects)

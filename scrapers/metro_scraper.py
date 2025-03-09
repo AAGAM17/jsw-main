@@ -39,7 +39,7 @@ class MetroScraper:
         adapter = requests.adapters.HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
-        
+    
         self.categories = [
             '/category/metro-rail-news',
             '/category/metro-rail-tenders',
@@ -105,7 +105,7 @@ class MetroScraper:
             except requests.exceptions.RequestException as e:
                 logger.error(f"Error fetching {url}: {str(e)}")
                 continue
-                
+        
         logger.info(f"Found {len(all_articles)} articles from metro news")
         return all_articles
     

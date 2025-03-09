@@ -17,6 +17,9 @@ from config.settings import Config
 from .email_handler import EmailHandler
 from whatsapp.interakt_handler import InteraktHandler
 from scrapers.metro_scraper import MetroScraper
+from firecrawl import FirecrawlApp # type: ignore
+from pydantic import BaseModel, Field
+from bs4 import BeautifulSoup
 import re
 import os
 
@@ -48,7 +51,56 @@ if not hasattr(Config, 'SERPER_SETTINGS'):
         ]
     }
 
-# Define state types
+# Initialize FirecrawlApp
+if not hasattr(Config, 'FIRECRAWL_API_KEY'):
+    Config.FIRECRAWL_API_KEY = os.environ.get('FIRECRAWL_API_KEY', '')
+
+# BSE Company URLs and their details
+BSE_COMPANIES = [
+    {
+        'symbol': 'IRCON',
+        'name': 'IRCON International Limited',
+        'url': 'https://www.bseindia.com/stock-share-price/ircon-international-ltd/ircon/541956/corp-announcements/',
+        'sector': 'Infrastructure'
+    },
+    {
+        'symbol': 'NBCC',
+        'name': 'NBCC (India) Limited',
+        'url': 'https://www.bseindia.com/stock-share-price/nbcc-(india)-ltd/nbcc/534309/corp-announcements/',
+        'sector': 'Construction'
+    },
+    {
+        'symbol': 'HFCL',
+        'name': 'HFCL Limited',
+        'url': 'https://www.bseindia.com/stock-share-price/hfcl-ltd/hfcl/500183/corp-announcements/',
+        'sector': 'Infrastructure'
+    },
+    {
+        'symbol': 'RITES',
+        'name': 'RITES Limited',
+        'url': 'https://www.bseindia.com/stock-share-price/rites-ltd/rites/541556/corp-announcements/',
+        'sector': 'Infrastructure'
+    },
+    {
+        'symbol': 'CAPACITE',
+        'name': 'Capacite Infraprojects Limited',
+        'url': 'https://www.bseindia.com/stock-share-price/capacite-infraprojects-ltd/capacite/540710/corp-announcements/',
+        'sector': 'Construction'
+    }
+]
+
+class BSEAnnouncement(BaseModel):
+    """Model for BSE announcements"""
+    title: str
+    date: datetime
+    description: str = Field(default="")
+    company: str
+    company_name: str
+    sector: str
+    url: str
+    category: str = Field(default="")
+    attachment_url: str = Field(default="")
+
 class ProjectData(TypedDict):
     """Type definition for project data."""
     title: str
@@ -74,28 +126,70 @@ class WorkflowState(TypedDict):
     status: str
 
 def extract_company_name(text: str) -> Union[str, None]:
-    """Extract company name from text."""
-    patterns = [
-        r'(?:M/s\.|M/s|Messrs\.)?\s*([A-Za-z\s&\.]+(?:Limited|Ltd|Corporation|Corp|Infrastructure|Infra|Construction|Engineering|Projects|Builders|Industries|Enterprises|Company|Pvt|Private|Public))',
-        r'(?:M/s\.|M/s|Messrs\.)?\s*([A-Za-z\s&\.]+)\s+(?:has been awarded|has won|wins|awarded to|bags|secures|emerges|selected for)',
-        r'([A-Z&]+(?:\s+[A-Z][a-z]+)*(?:\s+(?:Limited|Ltd|Corp|Infrastructure|Construction))?)',
-        r'([A-Za-z\s&\.]+)-([A-Za-z\s&\.]+)\s+(?:JV|Joint Venture|Consortium)'
-    ]
-    
-    for pattern in patterns:
-        if match := re.search(pattern, text):
-            company = match.group(1).strip()
-            # Remove all common prefixes including 'projects.'
-            company = re.sub(r'^(?:M/s\.|M/s|Messrs\.|cr\s+|projects\.|Projects\.|project\.|Project\.)\s*', '', company)
-            company = re.sub(r'\s+(?:Private|Pvt|Public|Company)\s+(?:Limited|Ltd)$', ' Limited', company)
-            company = re.sub(r'\s+(?:Private|Pvt|Public|Company)$', '', company)
-            company = re.sub(r'\s+', ' ', company)
-            company = company.replace(' and ', ' & ')
+    """Extract company name from text with high accuracy."""
+    try:
+        # Common company suffixes and their standardized forms
+        company_suffixes = {
+            'limited': 'Limited',
+            'ltd': 'Limited',
+            'pvt': 'Private',
+            'private': 'Private',
+            'corporation': 'Corporation',
+            'corp': 'Corporation',
+            'infrastructure': 'Infrastructure',
+            'infra': 'Infrastructure',
+            'construction': 'Construction',
+            'constructions': 'Construction',
+            'engineering': 'Engineering',
+            'projects': 'Projects',
+            'builders': 'Builders',
+            'industries': 'Industries',
+            'enterprises': 'Enterprises'
+        }
+        
+        # More precise patterns for company name extraction
+        patterns = [
+            # Pattern for "Company Name Ltd/Limited wins/bags/secures..."
+            r'(?:M/s\.|M/s|Messrs\.)?\s*([A-Z][A-Za-z\s&\.]+?)(?:\s+(?:' + '|'.join(company_suffixes.keys()) + r'))?\s+(?:wins|bags|secures|awarded|to build|to construct)',
             
-            if len(company) > 3 and not any(term in company.lower() for term in ['404', 'error', 'not found', 'page']):
-                return company
-    
-    return None
+            # Pattern for formal company names
+            r'(?:M/s\.|M/s|Messrs\.)?\s*([A-Z][A-Za-z\s&\.]+?)\s+(?:' + '|'.join(company_suffixes.keys()) + r')',
+            
+            # Pattern for JV/Consortium
+            r'([A-Z][A-Za-z\s&\.]+?)-([A-Z][A-Za-z\s&\.]+?)\s+(?:JV|Joint Venture|Consortium)'
+        ]
+        
+        for pattern in patterns:
+            if match := re.search(pattern, text, re.IGNORECASE):
+                company = match.group(1).strip()
+                
+                # Clean up the company name
+                company = re.sub(r'^(?:M/s\.|M/s|Messrs\.|cr\s+|projects\.|Projects\.|project\.|Project\.)\s*', '', company)
+                company = re.sub(r'\s+', ' ', company)
+                company = company.strip()
+                
+                # Validate company name
+                if (len(company) > 3 and  # Must be longer than 3 characters
+                    not any(term in company.lower() for term in ['404', 'error', 'not found', 'page']) and  # No error terms
+                    company[0].isupper() and  # Must start with capital letter
+                    not company.isupper() and  # Shouldn't be all caps
+                    len(company.split()) <= 5):  # Shouldn't be too long
+                    
+                    # Standardize company suffixes
+                    words = company.split()
+                    if len(words) > 1 and words[-1].lower() in company_suffixes:
+                        words[-1] = company_suffixes[words[-1].lower()]
+                        company = ' '.join(words)
+                    
+                    # Add Limited if it ends with Private
+                    if company.endswith('Private'):
+                        company += ' Limited'
+                    
+                    return company
+        return None
+    except Exception as e:
+        logger.error(f"Error extracting company name: {str(e)}")
+        return None
 
 def extract_project_value(text: str) -> Union[float, None]:
     """Extract project value from text."""
@@ -276,6 +370,250 @@ def calculate_priority_score(project: ProjectData) -> int:
         logger.error(f"Error calculating priority score: {str(e)}")
         return 50
 
+def scrape_bse_announcements() -> List[BSEAnnouncement]:
+    """Scrape project-related announcements from BSE."""
+    try:
+        announcements = []
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+
+        # Project-related keywords to filter announcements
+        project_keywords = [
+            'project', 'contract', 'order', 'construction', 'infrastructure',
+            'awarded', 'wins', 'secured', 'bags', 'development', 'execution',
+            'tender', 'bid', 'loa', 'letter of award', 'work order'
+        ]
+
+        for company in BSE_COMPANIES:
+            try:
+                logger.info(f"Scraping BSE announcements for {company['name']} ({company['symbol']})")
+                response = requests.get(company['url'], headers=headers, timeout=30)
+                
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    
+                    # Find the announcements table
+                    announcement_table = soup.find('table', {'class': ['announcements-table', 'table']})
+                    if not announcement_table:
+                        logger.warning(f"No announcements table found for {company['symbol']}")
+                        continue
+
+                    # Process each row in the table
+                    for row in announcement_table.find_all('tr')[1:]:  # Skip header row
+                        try:
+                            # Extract cells
+                            cells = row.find_all('td')
+                            if len(cells) < 3:
+                                continue
+
+                            # Extract announcement details
+                            title = cells[0].get_text(strip=True)
+                            date_str = cells[1].get_text(strip=True)
+                            category = cells[2].get_text(strip=True) if len(cells) > 2 else ""
+                            
+                            # Extract attachment URL if available
+                            attachment_url = ""
+                            attachment_link = cells[0].find('a', href=True)
+                            if attachment_link:
+                                attachment_url = attachment_link.get('href', '')
+                                if attachment_url and not attachment_url.startswith('http'):
+                                    attachment_url = f"https://www.bseindia.com{attachment_url}"
+
+                            # Check if announcement is project-related
+                            if any(keyword in title.lower() for keyword in project_keywords):
+                                try:
+                                    # Parse date with multiple format support
+                                    date = None
+                                    date_formats = ['%d-%m-%Y', '%d/%m/%Y', '%Y-%m-%d', '%d-%b-%Y']
+                                    
+                                    for fmt in date_formats:
+                                        try:
+                                            date = datetime.strptime(date_str, fmt)
+                                            break
+                                        except ValueError:
+                                            continue
+                                    
+                                    if not date:
+                                        logger.warning(f"Could not parse date: {date_str} for {company['symbol']}")
+                                        date = datetime.now()
+
+                                    # Create announcement object
+                                    announcement = BSEAnnouncement(
+                                        title=title,
+                                        date=date,
+                                        company=company['symbol'],
+                                        company_name=company['name'],
+                                        sector=company['sector'],
+                                        url=company['url'],
+                                        category=category,
+                                        attachment_url=attachment_url
+                                    )
+                                    
+                                    # Try to extract description from attachment if it's a PDF
+                                    if attachment_url.lower().endswith('.pdf'):
+                                        try:
+                                            pdf_response = requests.get(attachment_url, headers=headers, timeout=30)
+                                            if pdf_response.status_code == 200:
+                                                # TODO: Implement PDF text extraction
+                                                pass
+                                        except Exception as e:
+                                            logger.debug(f"Error extracting PDF content: {str(e)}")
+
+                                    announcements.append(announcement)
+                                    logger.debug(f"Added announcement: {title} from {company['symbol']}")
+
+                                except Exception as e:
+                                    logger.error(f"Error processing announcement date: {str(e)}")
+                                    continue
+
+                        except Exception as e:
+                            logger.error(f"Error processing announcement row: {str(e)}")
+                            continue
+
+                    logger.info(f"Found {len(announcements)} project-related announcements for {company['symbol']}")
+                    
+                else:
+                    logger.error(f"Failed to fetch announcements for {company['symbol']}: HTTP {response.status_code}")
+
+                time.sleep(2)  # Respect rate limits
+
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Network error scraping {company['symbol']}: {str(e)}")
+                continue
+            except Exception as e:
+                logger.error(f"Error processing {company['symbol']}: {str(e)}")
+                continue
+
+        # Sort announcements by date (newest first)
+        announcements.sort(key=lambda x: x.date, reverse=True)
+        
+        # Log summary
+        logger.info(f"Total project-related announcements found: {len(announcements)}")
+        for company in BSE_COMPANIES:
+            company_announcements = [a for a in announcements if a.company == company['symbol']]
+            logger.info(f"- {company['symbol']}: {len(company_announcements)} announcements")
+
+        return announcements
+
+    except Exception as e:
+        logger.error(f"Error in BSE scraping: {str(e)}")
+        return []
+
+def scrape_firecrawl_data() -> List[dict]:
+    """Scrape project data using FirecrawlApp."""
+    try:
+        if not Config.FIRECRAWL_API_KEY:
+            logger.warning("No Firecrawl API key configured")
+            return []
+
+        app = FirecrawlApp(api_key=Config.FIRECRAWL_API_KEY)
+
+        class ProjectSchema(BaseModel):
+            project_title: str = Field(description="The title or name of the project")
+            project_value: float = Field(description="The value of the project in crores")
+            company_name: str = Field(description="The name of the company executing the project")
+            project_description: str = Field(description="Detailed description of the project")
+            project_location: str = Field(description="Location where the project will be executed")
+            timeline: str = Field(description="Project timeline or duration")
+
+        # Define target URLs for infrastructure companies and news sources
+        target_urls = [
+            'https://www.larsentoubro.com/corporate/news/*',
+            'https://www.afcons.com/news-media/*',
+            'https://www.shapoorji.in/media/*',
+            'https://www.nbccindia.com/newsupdate*',
+            'https://www.constructionweekonline.in/*',
+            'https://www.constructionworld.in/*',
+            'https://www.infraline.com/*'
+        ]
+
+        data = app.extract(
+            target_urls,
+            {
+                'prompt': 'Extract infrastructure and construction project details including title, value, company name, description, location, and timeline.',
+                'schema': ProjectSchema.model_json_schema()
+            }
+        )
+
+        # Convert Firecrawl data to project format
+        projects = []
+        for item in data:
+            try:
+                if isinstance(item, dict):
+                    project = {
+                        'title': item.get('project_title', ''),
+                        'description': item.get('project_description', ''),
+                        'value': float(item.get('project_value', 0)),
+                        'company': item.get('company_name', ''),
+                        'location': item.get('project_location', 'India'),
+                        'source': 'firecrawl',
+                        'source_url': item.get('url', ''),
+                        'start_date': datetime.now(),
+                        'end_date': datetime.now() + timedelta(days=365)
+                    }
+                    
+                    # Try to parse timeline
+                    timeline = item.get('timeline', '')
+                    if timeline:
+                        try:
+                            # Extract duration in months
+                            duration_match = re.search(r'(\d+)\s*(?:month|year)s?', timeline)
+                            if duration_match:
+                                months = int(duration_match.group(1))
+                                if 'year' in timeline:
+                                    months *= 12
+                                project['end_date'] = project['start_date'] + timedelta(days=months * 30)
+                        except Exception as e:
+                            logger.debug(f"Error parsing timeline: {str(e)}")
+
+                    projects.append(project)
+
+            except Exception as e:
+                logger.error(f"Error processing Firecrawl item: {str(e)}")
+                continue
+
+        logger.info(f"Found {len(projects)} projects via Firecrawl")
+        return projects
+
+    except Exception as e:
+        logger.error(f"Error in Firecrawl scraping: {str(e)}")
+        return []
+
+def convert_bse_to_project(announcement: BSEAnnouncement) -> dict:
+    """Convert a BSE announcement to a project format."""
+    try:
+        # Extract value from title if present
+        value = 0
+        value_match = re.search(r'(?:Rs\.|Rs|INR|₹)\s*(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:cr|crore|Cr)', announcement.title)
+        if value_match:
+            try:
+                value = float(value_match.group(1).replace(',', ''))
+            except ValueError:
+                pass
+
+        # Create project dictionary
+        project = {
+            'title': announcement.title,
+            'description': announcement.description or announcement.title,
+            'source_url': announcement.attachment_url or announcement.url,
+            'source': 'bse',
+            'company': announcement.company_name,  # Use full company name
+            'company_symbol': announcement.company,  # Keep stock symbol
+            'sector': announcement.sector,
+            'start_date': announcement.date,
+            'end_date': announcement.date + timedelta(days=365),  # Default 1 year duration
+            'value': value,
+            'category': announcement.category,
+            'is_verified': True  # BSE announcements are considered verified
+        }
+
+        return project
+
+    except Exception as e:
+        logger.error(f"Error converting BSE announcement to project: {str(e)}")
+        return None
+
 def scrape_projects(state: WorkflowState) -> WorkflowState:
     """Scrape projects from various sources."""
     try:
@@ -284,10 +622,23 @@ def scrape_projects(state: WorkflowState) -> WorkflowState:
         # Initialize components
         metro_scraper = MetroScraper()
         
-        # Get projects from metro scraper
+        # Get projects from different sources
         metro_projects = metro_scraper.scrape_latest_news()
+        bse_projects = []
+        serper_projects = []
         
-        # Extended search queries for more comprehensive results
+        # Convert BSE announcements to projects
+        bse_announcements = scrape_bse_announcements()
+        for announcement in bse_announcements:
+            try:
+                project = convert_bse_to_project(announcement)
+                if project:
+                    bse_projects.append(project)
+            except Exception as e:
+                logger.error(f"Error converting BSE announcement to project: {str(e)}")
+                continue
+
+        # Get Serper projects with expanded search queries
         search_queries = [
             "new infrastructure project india announced",
             "construction project tender awarded india",
@@ -298,25 +649,29 @@ def scrape_projects(state: WorkflowState) -> WorkflowState:
             "industrial project construction india",
             "steel structure project india",
             "commercial building project india",
-            "industrial complex construction india"
+            "industrial complex construction india",
+            "railway project india tender awarded",
+            "port development project india",
+            "power plant construction india",
+            "smart city project india construction",
+            "airport construction project india"
         ]
-        
-        # Get Serper projects
-        serper_projects = []
         
         for query in search_queries:
             try:
-                # Prepare Serper API request
                 payload = json.dumps({
                     "q": query,
-                    "num": 10
+                    "num": 15,  # Increased from 10 to 15 results
+                    "gl": "in",  # Set region to India
+                    "hl": "en",  # Set language to English
+                    "time": "m",  # Last month
+                    "type": "news"  # Focus on news results
                 })
                 headers = {
                     'X-API-KEY': Config.SERPER_API_KEY,
                     'Content-Type': 'application/json'
                 }
                 
-                # Make request to Serper API
                 response = requests.post(
                     "https://google.serper.dev/search",
                     headers=headers,
@@ -327,63 +682,100 @@ def scrape_projects(state: WorkflowState) -> WorkflowState:
                 if response.status_code == 200:
                     data = response.json()
                     organic_results = data.get('organic', [])
+                    news_results = data.get('news', [])  # Also check news results
                     
-                    for result in organic_results:
+                    # Combine organic and news results
+                    all_results = organic_results + news_results
+                    
+                    for result in all_results:
                         try:
+                            # Process Serper result
                             title = result.get('title', '')
                             snippet = result.get('snippet', '')
                             link = result.get('link', '')
+                            date = result.get('date')
                             
-                            # Skip if URL is in excluded domains
-                            if any(domain in link.lower() for domain in Config.SERPER_SETTINGS['exclude_domains']):
-                                continue
-                                
-                            # Skip if title or snippet is empty
-                            if not title or not snippet:
-                                continue
-                                
-                            # Skip if URL is invalid
-                            if not link.startswith('http'):
-                                continue
-                                
-                            # Create project from Serper result
+                            # Extract value and company
+                            value = extract_project_value(title + " " + snippet)
+                            company = extract_company_name(title + " " + snippet) or "Unknown Company"
+                            
+                            # Try to parse date if available
+                            try:
+                                if date:
+                                    start_date = datetime.strptime(date, '%Y-%m-%d')
+                                else:
+                                    start_date = datetime.now()
+                            except Exception:
+                                start_date = datetime.now()
+                            
                             serper_projects.append({
                                 'title': title,
                                 'description': snippet,
                                 'source_url': link,
                                 'source': 'serper_web',
-                                'value': 0,  # Will be enriched later
-                                'company': '',  # Will be enriched later
-                                'start_date': datetime.now(),
-                                'end_date': datetime.now() + timedelta(days=365),
-                                'news_date': datetime.now()
+                                'value': value,
+                                'company': company,
+                                'start_date': start_date,
+                                'end_date': start_date + timedelta(days=365),
+                                'is_verified': False
                             })
-                            
                         except Exception as e:
                             logger.warning(f"Failed to process Serper result: {str(e)}")
                             continue
-                            
-                else:
-                    logger.error(f"Serper API returned status code: {response.status_code}")
-                    
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Request error in Serper search for query '{query}': {str(e)}")
+                
             except Exception as e:
                 logger.error(f"Error in Serper search for query '{query}': {str(e)}")
+                continue
                 
-            time.sleep(2)  # Add delay between queries
-            
-        # Combine all projects with deduplication
+            time.sleep(1)  # Reduced sleep time between queries
+
+        # Combine all projects with deduplication and source tracking
         seen_urls = set()
         all_projects = []
         
-        for project in metro_projects + serper_projects:
+        # Helper function to check if projects are similar
+        def are_similar_projects(p1: dict, p2: dict) -> bool:
+            """Check if two projects are similar based on title and company."""
+            if not p1 or not p2:
+                return False
+                
+            title1 = p1.get('title', '').lower()
+            title2 = p2.get('title', '').lower()
+            company1 = p1.get('company', '').lower()
+            company2 = p2.get('company', '').lower()
+            
+            # Check for title similarity
+            if title1 and title2:
+                # If titles are very similar or one contains the other
+                if (title1 in title2 or title2 in title1 or
+                    len(set(title1.split()) & set(title2.split())) / len(set(title1.split() + title2.split())) > 0.7):
+                    # If company names are available and match
+                    if company1 and company2:
+                        return company1 in company2 or company2 in company1
+                    return True
+            return False
+
+        # Process projects in order of reliability
+        for project in bse_projects:  # BSE first (most reliable)
             url = project.get('source_url', '')
             if url and url not in seen_urls:
                 seen_urls.add(url)
                 all_projects.append(project)
+
+        for project in metro_projects + serper_projects:  # Less structured sources last
+            url = project.get('source_url', '')
+            is_duplicate = False
+            for existing_project in all_projects:
+                if are_similar_projects(project, existing_project):
+                    is_duplicate = True
+                    break
+            if not is_duplicate and url and url not in seen_urls:
+                seen_urls.add(url)
+                project['is_verified'] = False  # These sources need verification
+                all_projects.append(project)
         
         logger.info(f"Found {len(all_projects)} total projects before filtering")
+        logger.info(f"- BSE projects: {len(bse_projects)}")
         logger.info(f"- Metro projects: {len(metro_projects)}")
         logger.info(f"- Serper projects: {len(serper_projects)}")
         
@@ -424,12 +816,26 @@ def filter_projects(state: WorkflowState) -> WorkflowState:
 
         for project in state['projects']:
             try:
+                # Ensure project is a dictionary
+                if not isinstance(project, dict):
+                    logger.warning(f"Skipping non-dictionary project: {type(project)}")
+                    continue
+
                 # Skip invalid URLs
                 if not project.get('source_url'):
                     continue
 
+                # Generate headline first to check if it's a contract win
+                headline = generate_catchy_headline(project)
+                if not headline:  # Empty headline means it's not a contract win
+                    logger.info(f"Skipping non-contract win project: {project.get('title', '')}")
+                    continue
+
+                # Update the project title with the generated headline
+                project['title'] = headline
+
                 # Extract dates from title and description
-                text = f"{project.get('title', '')} {project.get('description', '')}"
+                text = f"{headline} {project.get('description', '')}"
                 
                 # Initialize dates
                 start_date = None
@@ -489,7 +895,7 @@ def filter_projects(state: WorkflowState) -> WorkflowState:
                 # Validate timeline logic
                 if end_date <= start_date:
                     end_date = start_date + timedelta(days=365)
-
+                
                 # More lenient date filtering - accept projects up to 30 days old
                 if start_date < min_date and 'tender' not in text.lower() and 'bid' not in text.lower():
                     logger.info(f"Skipping old project: {project.get('title')} (Start date: {start_date})")
@@ -507,8 +913,9 @@ def filter_projects(state: WorkflowState) -> WorkflowState:
                 # Extract and validate company name early - more lenient
                 text = f"{title} {project.get('description', '')}"
                 company_name = project.get('company') or extract_company_name(text)
-                if not company_name:
-                    company_name = "Unknown Company"  # Default company name
+                if not company_name or company_name == "Unknown Company":
+                    logger.info(f"Skipping project with unknown company: {title}")
+                    continue
                 
                 # Look for recency indicators - expanded list
                 recency_indicators = [
@@ -570,6 +977,59 @@ def filter_projects(state: WorkflowState) -> WorkflowState:
         state['status'] = 'error'
         return state
 
+def is_contract_win(headline: str, description: str) -> bool:
+    """
+    Determine if the headline and description indicate a contract win.
+    Returns True if it's a contract win, False otherwise.
+    """
+    try:
+        if not Config.GROQ_API_KEY:
+            logger.warning("No Groq API key configured for contract validation")
+            return True
+
+        groq_client = Groq(api_key=Config.GROQ_API_KEY)
+        
+        context = f"""
+        Analyze if this project headline and description represent a company winning a new contract or project.
+
+        Headline: {headline}
+        Description: {description}
+
+        Requirements:
+        1. Return ONLY "yes" if ALL of these are true:
+           - A company has won/secured/bagged a new contract or project
+           - It's a recent or upcoming project (not completed)
+           - It's a construction, infrastructure, or industrial project
+        2. Return ONLY "no" if ANY of these are true:
+           - It's just a project update/status
+           - It's about project completion
+           - It's about general company news
+           - It's about project planning or tendering
+           - It's about project delays or issues
+        
+        Return ONLY "yes" or "no", nothing else.
+        """
+        
+        completion = groq_client.chat.completions.create(
+            messages=[{
+                "role": "system",
+                "content": "You are a project news analyzer. Your job is to determine if news items represent new contract wins."
+            }, {
+                "role": "user",
+                "content": context
+            }],
+            model="llama-3.3-70b-versatile",
+            temperature=0.1,
+            max_tokens=10
+        )
+        
+        result = completion.choices[0].message.content.strip().lower()
+        return result == "yes"
+        
+    except Exception as e:
+        logger.error(f"Error validating contract win: {str(e)}")
+        return True  # Default to True in case of errors to avoid losing potential leads
+
 def generate_catchy_headline(project: dict) -> str:
     """Generate a catchy headline for a project using Groq."""
     try:
@@ -582,7 +1042,7 @@ def generate_catchy_headline(project: dict) -> str:
         except Exception as e:
             logger.error(f"Failed to initialize Groq client: {str(e)}")
             return project.get('title', '')
-            
+        
         # Extract key project details
         title = project.get('title', '')
         company = project.get('company', '')
@@ -633,9 +1093,9 @@ def generate_catchy_headline(project: dict) -> str:
                     "role": "user",
                     "content": context
                 }],
-                model="llama-3.3-70b-versatile",  # Using a more capable model
-                temperature=0.1,  # Lower temperature for more consistent output
-                max_tokens=50  # Shorter output for headlines
+                model="llama-3.3-70b-versatile",
+                temperature=0.1,
+                max_tokens=50
             )
             
             headline = completion.choices[0].message.content.strip()
@@ -649,19 +1109,18 @@ def generate_catchy_headline(project: dict) -> str:
             # Remove any headers or extra lines
             headline = headline.split('\n')[-1].strip()
             
-            # Ensure it's not too long
-            if len(headline) > 80:
-                headline = headline[:77] + "..."
-                
+            # Validate if it's a contract win
+            if not is_contract_win(headline, description):
+                logger.info(f"Discarding non-contract win: {headline}")
+                return ""  # Return empty string to indicate this should be filtered out
+            
             return headline
-            
         except Exception as e:
-            logger.error(f"Error generating headline with Groq: {str(e)}")
-            return project.get('title', '')  # Fallback to original title
-            
+            logger.error(f"Error in headline generation: {str(e)}")
+            return project.get('title', '')
     except Exception as e:
-        logger.error(f"Error in headline generation: {str(e)}")
-        return project.get('title', '')  # Fallback to original title
+        logger.error(f"Error generating headline: {str(e)}")
+        return project.get('title', '')
 
 def extract_location(text: str) -> str:
     """Extract location from project description."""
@@ -718,7 +1177,7 @@ def enrich_projects(state: WorkflowState) -> WorkflowState:
             except Exception as e:
                 logger.error(f"Error extracting domain: {str(e)}")
                 return None
-
+        
         # JSW product terms to filter out
         jsw_product_terms = [
             'jsw neosteel', 'jsw steel', 'jsw trusteel', 'neosteel', 'trusteel',
@@ -732,43 +1191,21 @@ def enrich_projects(state: WorkflowState) -> WorkflowState:
         for project in state['filtered_projects']:
             for retry in range(max_retries):
                 try:
-                    # Convert project to dictionary if it's not already
-                    if not isinstance(project, dict):
-                        if isinstance(project, str):
-                            project = {
-                                'title': project,
-                                'description': project,
-                                'value': 0,
-                                'company': '',
-                                'source_url': '',
-                                'start_date': datetime.now(),
-                                'end_date': datetime.now() + timedelta(days=365)
-                            }
-                        elif isinstance(project, list):
-                            # If it's a list, try to convert first element to title
-                            project = {
-                                'title': str(project[0]) if project else '',
-                                'description': ' '.join(str(x) for x in project),
-                                'value': 0,
-                                'company': '',
-                                'source_url': '',
-                                'start_date': datetime.now(),
-                                'end_date': datetime.now() + timedelta(days=365)
-                            }
-                        else:
-                            logger.warning(f"Skipping project of unknown type: {type(project)}")
-                            enrichment_failed += 1
-                            break
+                    # Ensure project is a dictionary with required fields
+                    if isinstance(project, dict):
+                        # Ensure required fields exist
+                        project.setdefault('title', '')
+                        project.setdefault('description', '')
+                        project.setdefault('value', 0)
+                        project.setdefault('company', '')
+                        project.setdefault('source_url', '')
+                        project.setdefault('start_date', datetime.now())
+                        project.setdefault('end_date', datetime.now() + timedelta(days=365))
+                    else:
+                        logger.warning(f"Skipping invalid project format: {type(project)}")
+                        enrichment_failed += 1
+                        break
 
-                    # Ensure required fields exist
-                    project.setdefault('title', '')
-                    project.setdefault('description', '')
-                    project.setdefault('value', 0)
-                    project.setdefault('company', '')
-                    project.setdefault('source_url', '')
-                    project.setdefault('start_date', datetime.now())
-                    project.setdefault('end_date', datetime.now() + timedelta(days=365))
-                    
                     # Extract project type and specifications
                     title = project['title'].lower()
                     description = project['description'].lower()
@@ -806,10 +1243,19 @@ def enrich_projects(state: WorkflowState) -> WorkflowState:
                     if floor_matches:
                         specs['floors'] = int(floor_matches[0])
                     
-                    # Calculate steel requirements
-                    value_in_cr = project.get('value', 0)
-                    base_steel_mt = value_in_cr * 100  # Rough estimate: 100 MT per crore
-                    
+                    # Calculate steel requirements with validation
+                    value_in_cr = float(project.get('value', 0))
+                    if value_in_cr <= 0:
+                        logger.warning(f"Invalid project value: {value_in_cr} cr for project: {project.get('title')}")
+                        continue
+
+                    # Base steel calculation with validation
+                    base_steel_mt = value_in_cr * 100  # 100 MT per crore as base
+                    if base_steel_mt <= 0:
+                        logger.warning(f"Invalid base steel calculation: {base_steel_mt} MT for project: {project.get('title')}")
+                        continue
+
+                    # Initialize steel requirements with validation
                     steel_reqs = {
                         'primary': {'type': 'TMT Bars', 'quantity': 0},
                         'secondary': [
@@ -818,63 +1264,106 @@ def enrich_projects(state: WorkflowState) -> WorkflowState:
                         ],
                         'tertiary': {'type': 'Wire Rods', 'quantity': 0}
                     }
+
+                    # Define steel distribution by project type
+                    type_distributions = {
+                        'metro': {
+                            'primary': ('Hot Rolled', 0.4),
+                            'secondary': [('Hot Rolled', 0.3), ('Cold Rolled', 0.2)],
+                            'tertiary': ('Wire Rods', 0.1)
+                        },
+                        'high_rise': {
+                            'primary': ('TMT Bars', 0.5),
+                            'secondary': [('Hot Rolled', 0.2), ('Cold Rolled', 0.2)],
+                            'tertiary': ('Wire Rods', 0.1)
+                        },
+                        'industrial': {
+                            'primary': ('Hot Rolled', 0.35),
+                            'secondary': [('Hot Rolled', 0.35), ('Cold Rolled', 0.2)],
+                            'tertiary': ('Wire Rods', 0.1)
+                        },
+                        'infrastructure': {  # Default
+                            'primary': ('TMT Bars', 0.4),
+                            'secondary': [('Hot Rolled', 0.3), ('Cold Rolled', 0.2)],
+                            'tertiary': ('Wire Rods', 0.1)
+                        }
+                    }
+
+                    # Apply steel distribution based on project type
+                    distribution = type_distributions.get(project_type, type_distributions['infrastructure'])
                     
-                    if project_type == 'metro':
-                        steel_reqs['primary']['type'] = 'Hot Rolled'
-                        steel_reqs['primary']['quantity'] = int(base_steel_mt * 0.4)
-                        steel_reqs['secondary'][0]['quantity'] = int(base_steel_mt * 0.3)
-                        steel_reqs['secondary'][1]['quantity'] = int(base_steel_mt * 0.2)
-                        steel_reqs['tertiary']['quantity'] = int(base_steel_mt * 0.1)
-                    elif project_type == 'high_rise':
-                        steel_reqs['primary']['type'] = 'TMT Bars'
-                        steel_reqs['primary']['quantity'] = int(base_steel_mt * 0.5)
-                        steel_reqs['secondary'][0]['quantity'] = int(base_steel_mt * 0.2)
-                        steel_reqs['secondary'][1]['quantity'] = int(base_steel_mt * 0.2)
-                        steel_reqs['tertiary']['quantity'] = int(base_steel_mt * 0.1)
-                    elif project_type == 'industrial':
-                        steel_reqs['primary']['type'] = 'Hot Rolled'
-                        steel_reqs['primary']['quantity'] = int(base_steel_mt * 0.35)
-                        steel_reqs['secondary'][0]['quantity'] = int(base_steel_mt * 0.35)
-                        steel_reqs['secondary'][1]['quantity'] = int(base_steel_mt * 0.2)
-                        steel_reqs['tertiary']['quantity'] = int(base_steel_mt * 0.1)
-                    else:  # Default infrastructure
-                        steel_reqs['primary']['type'] = 'TMT Bars'
-                        steel_reqs['primary']['quantity'] = int(base_steel_mt * 0.4)
-                        steel_reqs['secondary'][0]['quantity'] = int(base_steel_mt * 0.3)
-                        steel_reqs['secondary'][1]['quantity'] = int(base_steel_mt * 0.2)
-                        steel_reqs['tertiary']['quantity'] = int(base_steel_mt * 0.1)
+                    # Set primary steel
+                    steel_reqs['primary']['type'] = distribution['primary'][0]
+                    steel_reqs['primary']['quantity'] = int(base_steel_mt * distribution['primary'][1])
                     
-                    # Adjust based on specifications if available
+                    # Set secondary steel
+                    for i, (steel_type, ratio) in enumerate(distribution['secondary']):
+                        if i < len(steel_reqs['secondary']):
+                            steel_reqs['secondary'][i]['type'] = steel_type
+                            steel_reqs['secondary'][i]['quantity'] = int(base_steel_mt * ratio)
+                    
+                    # Set tertiary steel
+                    steel_reqs['tertiary']['type'] = distribution['tertiary'][0]
+                    steel_reqs['tertiary']['quantity'] = int(base_steel_mt * distribution['tertiary'][1])
+
+                    # Apply specification adjustments with validation
+                    def apply_factor(quantity: int, factor: float) -> int:
+                        """Apply factor to quantity with validation"""
+                        if factor <= 0:
+                            return quantity
+                        adjusted = int(quantity * factor)
+                        return max(adjusted, 1)  # Ensure positive quantity
+
                     if specs['length']:
-                        # For infrastructure projects with length, adjust based on length
-                        length_factor = min(specs['length'] / 10, 2.0)  # Cap at 2x for very long projects
-                        for req in [steel_reqs['primary']] + steel_reqs['secondary'] + [steel_reqs['tertiary']]:
-                            req['quantity'] = int(req['quantity'] * length_factor)
+                        length_factor = min(max(specs['length'] / 10, 0.1), 2.0)  # Ensure factor between 0.1 and 2.0
+                        steel_reqs['primary']['quantity'] = apply_factor(steel_reqs['primary']['quantity'], length_factor)
+                        for sec_req in steel_reqs['secondary']:
+                            sec_req['quantity'] = apply_factor(sec_req['quantity'], length_factor)
+                        steel_reqs['tertiary']['quantity'] = apply_factor(steel_reqs['tertiary']['quantity'], length_factor)
+                        
                     elif specs['area']:
-                        # For building projects with area, adjust based on area
-                        area_factor = min(specs['area'] / 10000, 2.0)  # Cap at 2x for very large areas
-                        for req in [steel_reqs['primary']] + steel_reqs['secondary'] + [steel_reqs['tertiary']]:
-                            req['quantity'] = int(req['quantity'] * area_factor)
+                        area_factor = min(max(specs['area'] / 10000, 0.1), 2.0)  # Ensure factor between 0.1 and 2.0
+                        steel_reqs['primary']['quantity'] = apply_factor(steel_reqs['primary']['quantity'], area_factor)
+                        for sec_req in steel_reqs['secondary']:
+                            sec_req['quantity'] = apply_factor(sec_req['quantity'], area_factor)
+                        steel_reqs['tertiary']['quantity'] = apply_factor(steel_reqs['tertiary']['quantity'], area_factor)
+                        
                     elif specs['floors']:
-                        # For high-rise projects with floors, adjust based on number of floors
-                        floor_factor = min(specs['floors'] / 20, 2.0)  # Cap at 2x for very tall buildings
-                        for req in [steel_reqs['primary']] + steel_reqs['secondary'] + [steel_reqs['tertiary']]:
-                            req['quantity'] = int(req['quantity'] * floor_factor)
-                    
-                    # Calculate total steel requirement
-                    steel_reqs['total'] = (
-                        steel_reqs['primary']['quantity'] +
-                        sum(req['quantity'] for req in steel_reqs['secondary']) +
-                        steel_reqs['tertiary']['quantity']
-                    )
-                    
-                    # Set minimum quantities
+                        floor_factor = min(max(specs['floors'] / 20, 0.1), 2.0)  # Ensure factor between 0.1 and 2.0
+                        steel_reqs['primary']['quantity'] = apply_factor(steel_reqs['primary']['quantity'], floor_factor)
+                        for sec_req in steel_reqs['secondary']:
+                            sec_req['quantity'] = apply_factor(sec_req['quantity'], floor_factor)
+                        steel_reqs['tertiary']['quantity'] = apply_factor(steel_reqs['tertiary']['quantity'], floor_factor)
+
+                    # Apply minimum quantities with validation
                     min_quantity = 50  # Minimum 50 MT for any requirement
                     steel_reqs['primary']['quantity'] = max(steel_reqs['primary']['quantity'], min_quantity)
                     for sec_req in steel_reqs['secondary']:
                         sec_req['quantity'] = max(sec_req['quantity'], min_quantity)
                     steel_reqs['tertiary']['quantity'] = max(steel_reqs['tertiary']['quantity'], min_quantity)
-                    
+
+                    # Calculate and validate total
+                    total = (
+                        steel_reqs['primary']['quantity'] +
+                        sum(sec_req['quantity'] for sec_req in steel_reqs['secondary']) +
+                        steel_reqs['tertiary']['quantity']
+                    )
+
+                    # Validate total
+                    if total <= 0:
+                        logger.error(f"Invalid total steel calculation: {total} MT for project: {project.get('title')}")
+                        continue
+
+                    # Add total to steel requirements
+                    steel_reqs['total'] = total
+
+                    # Log steel requirements for verification
+                    logger.info(f"Steel requirements for project '{project.get('title')}':")
+                    logger.info(f"- Primary ({steel_reqs['primary']['type']}): {steel_reqs['primary']['quantity']} MT")
+                    secondary_reqs = [f"{req['type']}: {req['quantity']} MT" for req in steel_reqs['secondary']]
+                    logger.info(f"- Secondary: {', '.join(secondary_reqs)}")
+                    logger.info(f"- Tertiary ({steel_reqs['tertiary']['type']}): {steel_reqs['tertiary']['quantity']} MT")
+
                     # Update project with enriched data
                     project['project_type'] = project_type
                     project['specifications'] = specs
